@@ -7,13 +7,15 @@
 #include "shader.h"
 
 #include <iostream>
+#include <array>
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
 void processInput(GLFWwindow *window);
+unsigned int loadTexture(const char *path, bool gammaCorrection);
 
 // settings
-const unsigned int SCR_WIDTH = 800;
-const unsigned int SCR_HEIGHT = 640;
+const unsigned int SCR_WIDTH = 1920;
+const unsigned int SCR_HEIGHT = 1080;
 
 const std::string SHADER_PATH{"/Users/zhangzihao/Code/Projects/opengl_test/opengl_test/src/shaders/"};
 const std::string IMAGE_PATH{"/Users/zhangzihao/Code/Projects/opengl_test/opengl_test/src/images/"};
@@ -58,105 +60,81 @@ int main()
     // ------------------------------------
     // you can name your shader files however you like
     Shader ourShader((SHADER_PATH + "shader.vert").c_str(), (SHADER_PATH + "shader.frag").c_str());
-    // set up vertex data (and buffer(s)) and configure vertex attributes
-    // ------------------------------------------------------------------
-    float vertices[] = {
-            // positions          // colors           // texture coords
-            1.0f,  1.0f, 0.0f,   1.0f, 0.0f, 0.0f,   1.0f, 1.0f, // top right
-            1.0f, -1.0f, 0.0f,   0.0f, 1.0f, 0.0f,   1.0f, 0.0f, // bottom right
-            -1.0f, -1.0f, 0.0f,   0.0f, 0.0f, 1.0f,   0.0f, 0.0f, // bottom left
-            -1.0f,  1.0f, 0.0f,   1.0f, 1.0f, 0.0f,   0.0f, 1.0f  // top left
-    };
-    float vertices1[] = {
-            // positions          // colors           // texture coords
-            0.5f,  0.5f, 0.0f,   1.0f, 0.0f, 0.0f,   1.0f, 1.0f, // top right
-            0.5f, -0.5f, 0.0f,   0.0f, 1.0f, 0.0f,   1.0f, 0.0f, // bottom right
-            -0.5f, -0.5f, 0.0f,   0.0f, 0.0f, 1.0f,   0.0f, 0.0f, // bottom left
-            -0.5f,  0.5f, 0.0f,   1.0f, 1.0f, 0.0f,   0.0f, 1.0f  // top left
-    };
-    unsigned int indices[] = {
-            0, 1, 3, // first triangle
-            1, 2, 3  // second triangle
+    Shader blurShader((SHADER_PATH + "blur_shader.vert").c_str(), (SHADER_PATH + "blur_shader.frag").c_str());
+
+//    static constexpr std::uint8_t scaleFactor = 16;
+    unsigned int scaleFactor = 8;
+    unsigned int copyVAO = 0, copyVBO = 0;
+    unsigned int highResFBO{};
+    unsigned int highResBuf{};
+    unsigned int pingpongFBO[2]{};
+    unsigned int pingpongBuffer[2]{};
+//    static constexpr std::uint8_t blurIterations = 16;
+    std::uint8_t blurIterations = 16;
+    static constexpr std::array<float, 20> quadVertices {
+            // positions        // texture Coords
+            -1.0f,  1.0f, 0.0f, 0.0f, 1.0f,
+            -1.0f, -1.0f, 0.0f, 0.0f, 0.0f,
+            1.0f,  1.0f, 0.0f, 1.0f, 1.0f,
+            1.0f, -1.0f, 0.0f, 1.0f, 0.0f
     };
 
-    unsigned int VBO, VAO, EBO;
-    glGenVertexArrays(1, &VAO);
-    glGenBuffers(1, &VBO);
-    glGenBuffers(1, &EBO);
+    // PING PONG
+    glGenFramebuffers(2, pingpongFBO);
+    glGenTextures(2, pingpongBuffer);
+    for (std::uint8_t i = 0; i < 2; i++) {
+        glBindFramebuffer(GL_FRAMEBUFFER, pingpongFBO[i]);
+        glBindTexture(GL_TEXTURE_2D, pingpongBuffer[i]);
+        glTexImage2D(
+                GL_TEXTURE_2D, 0, GL_RGB16F, SCR_WIDTH / scaleFactor, SCR_HEIGHT / scaleFactor, 0, GL_RGB,
+                GL_FLOAT, NULL);
+//        glTexImage2D(
+//                GL_TEXTURE_2D, 0, GL_RGB16F, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGB,
+//                GL_FLOAT, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glFramebufferTexture2D(
+                GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                pingpongBuffer[i], 0);
+    }
 
-    glBindVertexArray(VAO);
+    // HIGH RESOLUTION
+    glGenFramebuffers(1, &highResFBO);
+    glGenTextures(1, &highResBuf);
+    glBindFramebuffer(GL_FRAMEBUFFER, highResFBO);
 
-    glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+    glBindTexture(GL_TEXTURE_2D, highResBuf);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGB, GL_FLOAT, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, highResBuf, 0);
 
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    // position attribute
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+    blurShader.use();
+    blurShader.setInt("image", 0);
+
+    // create copy vao
+    glGenVertexArrays(1, &copyVAO);
+    glGenBuffers(1, &copyVBO);
+    glBindVertexArray(copyVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, copyVBO);
+    glBufferData(GL_ARRAY_BUFFER, quadVertices.size() * sizeof(float), &quadVertices, GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);
-    // color attribute
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(1);
-    // texture coord attribute
-    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
-    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
 
     // load and create a texture
     // -------------------------
     unsigned int texture1, texture2;
-    // texture 1
-    // ---------
-    glGenTextures(1, &texture1);
-    glBindTexture(GL_TEXTURE_2D, texture1);
-    // set the texture wrapping parameters
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);	// set texture wrapping to GL_REPEAT (default wrapping method)
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    // set texture filtering parameters
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-    // load image, create texture and generate mipmaps
-    int width, height, nrChannels;
-    stbi_set_flip_vertically_on_load(true); // tell stb_image.h to flip loaded texture's on the y-axis.
-    // The FileSystem::getPath(...) is part of the GitHub repository so we can find files on any IDE/platform; replace it with your own image path.
-    unsigned char *data = stbi_load((IMAGE_PATH + "cloud.jpg").c_str(), &width, &height, &nrChannels, 0);
-    if (data)
-    {
-        std::cout << "channels: " << nrChannels << std::endl;
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
-        glGenerateMipmap(GL_TEXTURE_2D);
-    }
-    else
-    {
-        std::cout << "Failed to load texture" << std::endl;
-    }
-    stbi_image_free(data);
-
-    // texture 2
-    // ---------
-    glGenTextures(1, &texture2);
-    glBindTexture(GL_TEXTURE_2D, texture2);
-    // set the texture wrapping parameters
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);	// set texture wrapping to GL_REPEAT (default wrapping method)
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    // set texture filtering parameters
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    // load image, create texture and generate mipmaps
-    data = stbi_load((IMAGE_PATH + "street.jpg").c_str(), &width, &height, &nrChannels, 0);
-    if (data)
-    {
-        std::cout << "channels: " << nrChannels << std::endl;
-        // note that the awesomeface.png has transparency and thus an alpha channel, so make sure to tell OpenGL the data type is of GL_RGBA
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
-        glGenerateMipmap(GL_TEXTURE_2D);
-    }
-    else
-    {
-        std::cout << "Failed to load texture" << std::endl;
-    }
-    stbi_image_free(data);
+    stbi_set_flip_vertically_on_load(true);
+    texture1 = loadTexture((IMAGE_PATH + "cloud.jpg").c_str(), false);
+    texture2 = loadTexture((IMAGE_PATH + "street.jpg").c_str(), false);
 
     // tell opengl for each sampler to which texture unit it belongs to (only has to be done once)
     // -------------------------------------------------------------------------------------------
@@ -166,16 +144,25 @@ int main()
     // or set it via the texture class
     ourShader.setInt("texture2", 1);
 
+    float deltaTime = 0.0f;
+    float lastFrame = 0.0f;
+    unsigned long frame = 0ul;
     // render loop
     // -----------
     while (!glfwWindowShouldClose(window))
     {
+        float currentFrame = static_cast<float>(glfwGetTime());
+        deltaTime = currentFrame - lastFrame;
+        lastFrame = currentFrame;
+        blurIterations = 2 * static_cast<std::uint8_t>(64 * abs(cos(currentFrame)) + 2);
+        std::cout << "\rFPS is: " << 1 / deltaTime << "Frame is: " << ++frame << "Avg FPS is: " << frame / currentFrame;
         // input
         // -----
         processInput(window);
 
         // render
         // ------
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
@@ -189,8 +176,77 @@ int main()
 
         // render container
         ourShader.use();
-        glBindVertexArray(VAO);
-        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+        glBindVertexArray(copyVAO);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glBindVertexArray(0);
+
+        // Copy default FBO to HighResFBO
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+        glReadBuffer(GL_COLOR_ATTACHMENT0);
+
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, highResFBO);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+
+        glBlitFramebuffer(0, 0, SCR_WIDTH, SCR_HEIGHT, 0, 0, SCR_WIDTH,
+                          SCR_HEIGHT,
+                          GL_COLOR_BUFFER_BIT,
+                          GL_NEAREST);
+
+        // Copy HighResFBO to PingPong0FBO
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, highResFBO);
+        glReadBuffer(GL_COLOR_ATTACHMENT0);
+
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, pingpongFBO[0]);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+
+        glViewport(0, 0, SCR_WIDTH / scaleFactor, SCR_HEIGHT / scaleFactor);
+
+        glBlitFramebuffer(0, 0, SCR_WIDTH, SCR_HEIGHT, 0, 0, SCR_WIDTH / scaleFactor,
+                          SCR_HEIGHT / scaleFactor,
+                          GL_COLOR_BUFFER_BIT,
+                          GL_LINEAR);
+//        glBlitFramebuffer(0, 0, SCR_WIDTH, SCR_HEIGHT, 0, 0, SCR_WIDTH,
+//                          SCR_HEIGHT,
+//                          GL_COLOR_BUFFER_BIT,
+//                          GL_LINEAR);
+
+        // Blur texture
+        bool horizontal = false;
+        blurShader.use();
+        for (std::uint8_t i = 0; i < blurIterations; i++) {
+            glBindFramebuffer(GL_FRAMEBUFFER, pingpongFBO[!horizontal]);
+            blurShader.setInt("horizontal", horizontal);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, pingpongBuffer[horizontal]);
+            glBindVertexArray(copyVAO);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            glBindVertexArray(0);
+            horizontal = !horizontal;
+        }
+
+        // Copy PingPong1FBO to HighResFBO
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, pingpongFBO[1]);
+        glReadBuffer(GL_COLOR_ATTACHMENT0);
+
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, highResFBO);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+
+        glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
+
+        glBlitFramebuffer(0, 0, SCR_WIDTH / scaleFactor, SCR_HEIGHT / scaleFactor, 0, 0, SCR_WIDTH,
+                          SCR_HEIGHT,
+                          GL_COLOR_BUFFER_BIT,
+                          GL_LINEAR);
+//        glBlitFramebuffer(0, 0, SCR_WIDTH, SCR_HEIGHT, 0, 0, SCR_WIDTH,
+//                          SCR_HEIGHT,
+//                          GL_COLOR_BUFFER_BIT,
+//                          GL_LINEAR);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        glBindVertexArray(copyVAO);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glBindVertexArray(0);
 
         // glfw: swap buffers and poll IO events (keys pressed/released, mouse moved etc.)
         // -------------------------------------------------------------------------------
@@ -200,9 +256,9 @@ int main()
 
     // optional: de-allocate all resources once they've outlived their purpose:
     // ------------------------------------------------------------------------
-    glDeleteVertexArrays(1, &VAO);
-    glDeleteBuffers(1, &VBO);
-    glDeleteBuffers(1, &EBO);
+//    glDeleteVertexArrays(1, &VAO);
+//    glDeleteBuffers(1, &VBO);
+//    glDeleteBuffers(1, &EBO);
 
     // glfw: terminate, clearing all previously allocated GLFW resources.
     // ------------------------------------------------------------------
@@ -228,7 +284,6 @@ void processInput(GLFWwindow *window)
         if (mixValue <= 0.0f)
             mixValue = 0.0f;
     }
-    std::cout << "\rmixValue is: " << mixValue << std::endl;
 }
 
 // glfw: whenever the window size changed (by OS or user resize) this callback function executes
@@ -238,4 +293,53 @@ void framebuffer_size_callback(GLFWwindow* window, int width, int height)
     // make sure the viewport matches the new window dimensions; note that width and
     // height will be significantly larger than specified on retina displays.
     glViewport(0, 0, width, height);
+}
+
+
+// utility function for loading a 2D texture from file
+// ---------------------------------------------------
+unsigned int loadTexture(char const * path, bool gammaCorrection)
+{
+    unsigned int textureID;
+    glGenTextures(1, &textureID);
+
+    int width, height, nrComponents;
+    unsigned char *data = stbi_load(path, &width, &height, &nrComponents, 0);
+    if (data)
+    {
+        GLenum internalFormat;
+        GLenum dataFormat;
+        if (nrComponents == 1)
+        {
+            internalFormat = dataFormat = GL_RED;
+        }
+        else if (nrComponents == 3)
+        {
+            internalFormat = gammaCorrection ? GL_SRGB : GL_RGB;
+            dataFormat = GL_RGB;
+        }
+        else if (nrComponents == 4)
+        {
+            internalFormat = gammaCorrection ? GL_SRGB_ALPHA : GL_RGBA;
+            dataFormat = GL_RGBA;
+        }
+
+        glBindTexture(GL_TEXTURE_2D, textureID);
+        glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, width, height, 0, dataFormat, GL_UNSIGNED_BYTE, data);
+        glGenerateMipmap(GL_TEXTURE_2D);
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+        stbi_image_free(data);
+    }
+    else
+    {
+        std::cout << "Texture failed to load at path: " << path << std::endl;
+        stbi_image_free(data);
+    }
+
+    return textureID;
 }

@@ -14,8 +14,8 @@ void processInput(GLFWwindow *window);
 unsigned int loadTexture(const char *path, bool gammaCorrection);
 
 // settings
-const unsigned int SCR_WIDTH = 1920;
-const unsigned int SCR_HEIGHT = 1080;
+const unsigned int SCR_WIDTH = 800;
+const unsigned int SCR_HEIGHT = 640;
 
 const std::string SHADER_PATH{"/Users/zhangzihao/Code/Projects/opengl_test/opengl_test/src/shaders/"};
 const std::string IMAGE_PATH{"/Users/zhangzihao/Code/Projects/opengl_test/opengl_test/src/images/"};

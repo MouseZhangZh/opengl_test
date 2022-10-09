@@ -1,27 +1,46 @@
 #include "glad/glad.h"
 #include "GLFW/glfw3.h"
 
+#include "glm/glm.hpp"
+#include "glm/gtc/matrix_transform.hpp"
+#include "glm/gtc/type_ptr.hpp"
+#include <ostream>
+#include <string>
+
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb/stb_image.h"
+
+#include <ft2build.h>
+#include FT_FREETYPE_H
+#include FT_ERRORS_H
 
 #include "shader.h"
 
 #include <iostream>
 #include <array>
+#include <map>
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
 void processInput(GLFWwindow *window);
 unsigned int loadTexture(const char *path, bool gammaCorrection);
+void RenderText(Shader &shader, std::u32string text, float x, float y, float scale, glm::vec3 color);
+int LoadText(char32_t ch);
 
 // settings
 const unsigned int SCR_WIDTH = 800;
 const unsigned int SCR_HEIGHT = 640;
 
-const std::string SHADER_PATH{"/Users/zhangzihao/Code/Projects/opengl_test/opengl_test/src/shaders/"};
-const std::string IMAGE_PATH{"/Users/zhangzihao/Code/Projects/opengl_test/opengl_test/src/images/"};
+/// Holds all state information relevant to a character as loaded using FreeType
+struct Character {
+    unsigned int TextureID; // ID handle of the glyph texture
+    glm::ivec2   Size;      // Size of glyph
+    glm::ivec2   Bearing;   // Offset from baseline to left/top of glyph
+    unsigned int Advance;   // Horizontal offset to advance to next glyph
+};
 
-// stores how much we're seeing of either texture
-float mixValue = 0.2f;
+std::map<char32_t, Character> Characters;
+
+unsigned int VAO, VBO;
 
 int main()
 {
@@ -56,212 +75,127 @@ int main()
         return -1;
     }
 
-    // build and compile our shader program
-    // ------------------------------------
-    // you can name your shader files however you like
-    Shader ourShader((SHADER_PATH + "shader.vert").c_str(), (SHADER_PATH + "shader.frag").c_str());
-    Shader blurShader((SHADER_PATH + "blur_shader.vert").c_str(), (SHADER_PATH + "blur_shader.frag").c_str());
+    // FreeType
+    FT_Library  library;   /* handle to library     */
+    FT_Face     face;      /* handle to face object */
+    FT_Error error = FT_Init_FreeType(&library);
+    if (error) {
+        std::cout << "FT_Init_FreeType error, code: " << error << FT_Error_String(error) << std::endl;
+        return -1;
+    }
+    std::cout << "FT_Init_FreeType success." << std::endl;
 
-//    static constexpr std::uint8_t scaleFactor = 16;
-    unsigned int scaleFactor = 8;
-    unsigned int copyVAO = 0, copyVBO = 0;
-    unsigned int highResFBO{};
-    unsigned int highResBuf{};
-    unsigned int pingpongFBO[2]{};
-    unsigned int pingpongBuffer[2]{};
-//    static constexpr std::uint8_t blurIterations = 16;
-    std::uint8_t blurIterations = 16;
-    static constexpr std::array<float, 20> quadVertices {
-            // positions        // texture Coords
-            -1.0f,  1.0f, 0.0f, 0.0f, 1.0f,
-            -1.0f, -1.0f, 0.0f, 0.0f, 0.0f,
-            1.0f,  1.0f, 0.0f, 1.0f, 1.0f,
-            1.0f, -1.0f, 0.0f, 1.0f, 0.0f
-    };
+    error = FT_New_Face(library, "../res/微软雅黑.ttf", 0, &face);
 
-    // PING PONG
-    glGenFramebuffers(2, pingpongFBO);
-    glGenTextures(2, pingpongBuffer);
-    for (std::uint8_t i = 0; i < 2; i++) {
-        glBindFramebuffer(GL_FRAMEBUFFER, pingpongFBO[i]);
-        glBindTexture(GL_TEXTURE_2D, pingpongBuffer[i]);
+    if (error == FT_Err_Unknown_File_Format) {
+        // ... the font file could be opened and read, but it appears
+        // ... that its font format is unsupported
+        std::cout << "FT_New_Face error, code: " << error << FT_Error_String(error) << std::endl;
+        return -1;
+    } else if (error) {
+        // ... another error code means that the font file could not
+        // ... be opened or read, or that it is broken...
+        std::cout << "FT_New_Face error, code: " << error << FT_Error_String(error) << std::endl;
+        return -1;
+    }
+    std::cout << "FT_New_Face success." << std::endl;
+
+    // set size to load glyphs as
+    error = FT_Set_Pixel_Sizes(face, 0, 128);
+    if (error) {
+        // ... another error code means that the font file could not
+        // ... be opened or read, or that it is broken...
+        std::cout << "FT_Set_Pixel_Sizes error, code: " << error << FT_Error_String(error) << std::endl;
+        return -1;
+    }
+    std::cout << "FT_Set_Pixel_Sizes success." << std::endl;
+    
+    // disable byte-alignment restriction
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+    // char16_t chinese_needed[] = u"今天吃什么"; //= {'今', '天', '吃', '什', '么'};
+
+    for (unsigned int c = 0; c < 128; ++c) {
+        error = FT_Load_Char(face, c, FT_LOAD_RENDER);
+        if (error) {
+            std::cout << "FT_Load_Char error, code: " << error << FT_Error_String(error) << std::endl;
+            return -1;
+        }
+        std::cout << "FT_Load_Char " << c << " success." << std::endl;
+
+        unsigned int texture;
+        glGenTextures(1, &texture);
+        glBindTexture(GL_TEXTURE_2D, texture);
         glTexImage2D(
-                GL_TEXTURE_2D, 0, GL_RGB16F, SCR_WIDTH / scaleFactor, SCR_HEIGHT / scaleFactor, 0, GL_RGB,
-                GL_FLOAT, NULL);
-//        glTexImage2D(
-//                GL_TEXTURE_2D, 0, GL_RGB16F, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGB,
-//                GL_FLOAT, NULL);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            GL_TEXTURE_2D,
+            0,
+            GL_RED,
+            face->glyph->bitmap.width,
+            face->glyph->bitmap.rows,
+            0,
+            GL_RED,
+            GL_UNSIGNED_BYTE,
+            face->glyph->bitmap.buffer
+        );
+        // set texture options
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glFramebufferTexture2D(
-                GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
-                pingpongBuffer[i], 0);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+        // now store character for later use
+        Character character = {
+            texture,
+            glm::ivec2(face->glyph->bitmap.width, face->glyph->bitmap.rows),
+            glm::ivec2(face->glyph->bitmap_left, face->glyph->bitmap_top),
+            static_cast<unsigned int>(face->glyph->advance.x)
+        };
+        Characters.insert(std::pair<char32_t, Character>(c, character));
     }
 
-    // HIGH RESOLUTION
-    glGenFramebuffers(1, &highResFBO);
-    glGenTextures(1, &highResBuf);
-    glBindFramebuffer(GL_FRAMEBUFFER, highResFBO);
+    glBindTexture(GL_TEXTURE_2D, 0);
 
-    glBindTexture(GL_TEXTURE_2D, highResBuf);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGB, GL_FLOAT, NULL);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, highResBuf, 0);
+    // destroy FreeType once we're finished
+    FT_Done_Face(face);
+    FT_Done_FreeType(library);
 
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-    blurShader.use();
-    blurShader.setInt("image", 0);
-
-    // create copy vao
-    glGenVertexArrays(1, &copyVAO);
-    glGenBuffers(1, &copyVBO);
-    glBindVertexArray(copyVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, copyVBO);
-    glBufferData(GL_ARRAY_BUFFER, quadVertices.size() * sizeof(float), &quadVertices, GL_STATIC_DRAW);
+        // configure VAO/VBO for texture quads
+    // -----------------------------------
+    glGenVertexArrays(1, &VAO);
+    glGenBuffers(1, &VBO);
+    glBindVertexArray(VAO);
+    glBindBuffer(GL_ARRAY_BUFFER, VBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 6 * 4, NULL, GL_DYNAMIC_DRAW);
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+    glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 4 * sizeof(float), 0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindVertexArray(0);
 
-    // load and create a texture
-    // -------------------------
-    unsigned int texture1, texture2;
-    stbi_set_flip_vertically_on_load(true);
-    texture1 = loadTexture((IMAGE_PATH + "cloud.jpg").c_str(), false);
-    texture2 = loadTexture((IMAGE_PATH + "street.jpg").c_str(), false);
+    // OpenGL state
+    // ------------
+    glEnable(GL_CULL_FACE);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    // tell opengl for each sampler to which texture unit it belongs to (only has to be done once)
-    // -------------------------------------------------------------------------------------------
-    ourShader.use(); // don't forget to activate/use the shader before setting uniforms!
-    // either set it manually like so:
-    glUniform1i(glGetUniformLocation(ourShader.ID, "texture1"), 0);
-    // or set it via the texture class
-    ourShader.setInt("texture2", 1);
+    Shader text_shader("/Users/zhangzihao/Code/Projects/opengl_test/opengl_test/src/shaders/text.vert",
+                        "/Users/zhangzihao/Code/Projects/opengl_test/opengl_test/src/shaders/text.frag");
 
-    float deltaTime = 0.0f;
-    float lastFrame = 0.0f;
-    unsigned long frame = 0ul;
-    // render loop
-    // -----------
-    while (!glfwWindowShouldClose(window))
-    {
-        float currentFrame = static_cast<float>(glfwGetTime());
-        deltaTime = currentFrame - lastFrame;
-        lastFrame = currentFrame;
-        blurIterations = 2 * static_cast<std::uint8_t>(64 * abs(cos(currentFrame)) + 2);
-        std::cout << "\rFPS is: " << 1 / deltaTime << "Frame is: " << ++frame << "Avg FPS is: " << frame / currentFrame;
-        // input
-        // -----
+    glm::mat4 projection = glm::ortho(0.0f, static_cast<float>(SCR_WIDTH), 0.0f, static_cast<float>(SCR_HEIGHT));
+    text_shader.use();
+    glUniformMatrix4fv(glGetUniformLocation(text_shader.ID, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+
+    while (!glfwWindowShouldClose(window)) {
         processInput(window);
-
-        // render
-        // ------
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
+        glClearColor(0.0f, 0.3f, 0.3f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
-        // bind textures on corresponding texture units
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, texture1);
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, texture2);
+        RenderText(text_shader, U"1234567890000000", 25.0f, 25.0f, 1.0f, glm::vec3(0.5, 0.8f, 0.2f));
+        RenderText(text_shader, U"今天吃什么???", 0.0f, 570.0f, 0.5f, glm::vec3(0.3, 0.7f, 0.9f));
 
-        ourShader.setFloat("mixValue", mixValue);
-
-        // render container
-        ourShader.use();
-        glBindVertexArray(copyVAO);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        glBindVertexArray(0);
-
-        // Copy default FBO to HighResFBO
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-        glReadBuffer(GL_COLOR_ATTACHMENT0);
-
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, highResFBO);
-        glDrawBuffer(GL_COLOR_ATTACHMENT0);
-
-        glBlitFramebuffer(0, 0, SCR_WIDTH, SCR_HEIGHT, 0, 0, SCR_WIDTH,
-                          SCR_HEIGHT,
-                          GL_COLOR_BUFFER_BIT,
-                          GL_NEAREST);
-
-        // Copy HighResFBO to PingPong0FBO
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, highResFBO);
-        glReadBuffer(GL_COLOR_ATTACHMENT0);
-
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, pingpongFBO[0]);
-        glDrawBuffer(GL_COLOR_ATTACHMENT0);
-
-        glViewport(0, 0, SCR_WIDTH / scaleFactor, SCR_HEIGHT / scaleFactor);
-
-        glBlitFramebuffer(0, 0, SCR_WIDTH, SCR_HEIGHT, 0, 0, SCR_WIDTH / scaleFactor,
-                          SCR_HEIGHT / scaleFactor,
-                          GL_COLOR_BUFFER_BIT,
-                          GL_LINEAR);
-//        glBlitFramebuffer(0, 0, SCR_WIDTH, SCR_HEIGHT, 0, 0, SCR_WIDTH,
-//                          SCR_HEIGHT,
-//                          GL_COLOR_BUFFER_BIT,
-//                          GL_LINEAR);
-
-        // Blur texture
-        bool horizontal = false;
-        blurShader.use();
-        for (std::uint8_t i = 0; i < blurIterations; i++) {
-            glBindFramebuffer(GL_FRAMEBUFFER, pingpongFBO[!horizontal]);
-            blurShader.setInt("horizontal", horizontal);
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, pingpongBuffer[horizontal]);
-            glBindVertexArray(copyVAO);
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-            glBindVertexArray(0);
-            horizontal = !horizontal;
-        }
-
-        // Copy PingPong1FBO to HighResFBO
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, pingpongFBO[1]);
-        glReadBuffer(GL_COLOR_ATTACHMENT0);
-
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, highResFBO);
-        glDrawBuffer(GL_COLOR_ATTACHMENT0);
-
-        glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
-
-        glBlitFramebuffer(0, 0, SCR_WIDTH / scaleFactor, SCR_HEIGHT / scaleFactor, 0, 0, SCR_WIDTH,
-                          SCR_HEIGHT,
-                          GL_COLOR_BUFFER_BIT,
-                          GL_LINEAR);
-//        glBlitFramebuffer(0, 0, SCR_WIDTH, SCR_HEIGHT, 0, 0, SCR_WIDTH,
-//                          SCR_HEIGHT,
-//                          GL_COLOR_BUFFER_BIT,
-//                          GL_LINEAR);
-
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-        glBindVertexArray(copyVAO);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        glBindVertexArray(0);
-
-        // glfw: swap buffers and poll IO events (keys pressed/released, mouse moved etc.)
-        // -------------------------------------------------------------------------------
         glfwSwapBuffers(window);
         glfwPollEvents();
     }
 
-    // optional: de-allocate all resources once they've outlived their purpose:
-    // ------------------------------------------------------------------------
-//    glDeleteVertexArrays(1, &VAO);
-//    glDeleteBuffers(1, &VBO);
-//    glDeleteBuffers(1, &EBO);
-
-    // glfw: terminate, clearing all previously allocated GLFW resources.
-    // ------------------------------------------------------------------
     glfwTerminate();
     return 0;
 }
@@ -272,18 +206,6 @@ void processInput(GLFWwindow *window)
 {
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
         glfwSetWindowShouldClose(window, true);
-    if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS)
-    {
-        mixValue += 0.001f; // change this value accordingly (might be too slow or too fast based on system hardware)
-        if(mixValue >= 1.0f)
-            mixValue = 1.0f;
-    }
-    if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS)
-    {
-        mixValue -= 0.001f; // change this value accordingly (might be too slow or too fast based on system hardware)
-        if (mixValue <= 0.0f)
-            mixValue = 0.0f;
-    }
 }
 
 // glfw: whenever the window size changed (by OS or user resize) this callback function executes
@@ -342,4 +264,145 @@ unsigned int loadTexture(char const * path, bool gammaCorrection)
     }
 
     return textureID;
+}
+
+int LoadText(char32_t ch) {
+    // FreeType
+    FT_Library  library;   /* handle to library     */
+    FT_Face     face;      /* handle to face object */
+    FT_Error error = FT_Init_FreeType(&library);
+    if (error) {
+        std::cout << "FT_Init_FreeType error, code: " << error << FT_Error_String(error) << std::endl;
+        return -1;
+    }
+    std::cout << "FT_Init_FreeType success." << std::endl;
+
+    error = FT_New_Face(library, "../res/HanYiYaYaTiJian-1.ttf", 0, &face);
+
+    if (error == FT_Err_Unknown_File_Format) {
+        // ... the font file could be opened and read, but it appears
+        // ... that its font format is unsupported
+        std::cout << "FT_New_Face error, code: " << error << FT_Error_String(error) << std::endl;
+        return -1;
+    } else if (error) {
+        // ... another error code means that the font file could not
+        // ... be opened or read, or that it is broken...
+        std::cout << "FT_New_Face error, code: " << error << FT_Error_String(error) << std::endl;
+        return -1;
+    }
+    std::cout << "FT_New_Face success." << std::endl;
+
+    // set size to load glyphs as
+    error = FT_Set_Pixel_Sizes(face, 0, 128);
+    if (error) {
+        // ... another error code means that the font file could not
+        // ... be opened or read, or that it is broken...
+        std::cout << "FT_Set_Pixel_Sizes error, code: " << error << FT_Error_String(error) << std::endl;
+        return -1;
+    }
+    std::cout << "FT_Set_Pixel_Sizes success." << std::endl;
+    
+    // disable byte-alignment restriction
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+    // for (unsigned int c = 0; c < 128; ++c) {
+        error = FT_Load_Char(face, ch, FT_LOAD_RENDER);
+        if (error) {
+            std::cout << "FT_Load_Char error, code: " << error << FT_Error_String(error) << std::endl;
+            return -1;
+        }
+        std::cout << "FT_Load_Char " << ch << " success." << std::endl;
+
+        unsigned int texture;
+        glGenTextures(1, &texture);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glTexImage2D(
+            GL_TEXTURE_2D,
+            0,
+            GL_RED,
+            face->glyph->bitmap.width,
+            face->glyph->bitmap.rows,
+            0,
+            GL_RED,
+            GL_UNSIGNED_BYTE,
+            face->glyph->bitmap.buffer
+        );
+        // set texture options
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+        // now store character for later use
+        Character character = {
+            texture,
+            glm::ivec2(face->glyph->bitmap.width, face->glyph->bitmap.rows),
+            glm::ivec2(face->glyph->bitmap_left, face->glyph->bitmap_top),
+            static_cast<unsigned int>(face->glyph->advance.x)
+        };
+        Characters.insert(std::pair<char32_t, Character>(ch, character));
+    // }
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    // destroy FreeType once we're finished
+    FT_Done_Face(face);
+    FT_Done_FreeType(library);
+
+    return 0;
+}
+
+// render line of text
+// -------------------
+void RenderText(Shader &shader, std::u32string text, float x, float y, float scale, glm::vec3 color)
+{
+    // activate corresponding render state	
+    shader.use();
+    glUniform3f(glGetUniformLocation(shader.ID, "textColor"), color.x, color.y, color.z);
+    glActiveTexture(GL_TEXTURE0);
+    glBindVertexArray(VAO);
+
+    // iterate through all characters
+    std::u32string::const_iterator c;
+
+    for (c = text.begin(); c != text.end(); c++) 
+    {
+        if (Characters.find(*c) == Characters.end()) {
+            if (LoadText(*c)) {
+                std::cout << "Load Text " << *c << "error." << std::endl;
+            } else {
+                std::cout << "Load Text " << *c << "success." << std::endl;
+            }
+        }
+        Character ch = Characters[*c];
+
+        float xpos = x + ch.Bearing.x * scale;
+        float ypos = y - (ch.Size.y - ch.Bearing.y) * scale;
+
+        float w = ch.Size.x * scale;
+        float h = ch.Size.y * scale;
+        // update VBO for each character
+        float vertices[6][4] = {
+            { xpos,     ypos + h,   0.0f, 0.0f },            
+            { xpos,     ypos,       0.0f, 1.0f },
+            { xpos + w, ypos,       1.0f, 1.0f },
+
+            { xpos,     ypos + h,   0.0f, 0.0f },
+            { xpos + w, ypos,       1.0f, 1.0f },
+            { xpos + w, ypos + h,   1.0f, 0.0f }           
+        };
+        // render glyph texture over quad
+        glBindTexture(GL_TEXTURE_2D, ch.TextureID);
+        // update content of VBO memory
+        glBindBuffer(GL_ARRAY_BUFFER, VBO);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(vertices), vertices); // be sure to use glBufferSubData and not glBufferData
+
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        // render quad
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        // now advance cursors for next glyph (note that advance is number of 1/64 pixels)
+        x += (ch.Advance >> 6) * scale; // bitshift by 6 to get value in pixels (2^6 = 64 (divide amount of 1/64th pixels by 64 to get amount of pixels))
+    }
+    glBindVertexArray(0);
+    glBindTexture(GL_TEXTURE_2D, 0);
 }
